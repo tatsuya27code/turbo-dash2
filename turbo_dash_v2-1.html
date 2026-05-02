@@ -286,11 +286,12 @@ const btnCenter = document.getElementById('btn-center');
 };
 
  
- 
- 
+ const cEnd = e=>{ e.preventDefault();
+  if(STATE==='PLAYING') ship.fire=false;
+  if(STATE==='STAGECLEAR' || STATE==='SHOP') return; 
+};
 
-
-                  
+                 
 };
 btnCenter.addEventListener('click',cFire);
 btnCenter.addEventListener('touchstart',cFire,{passive:false});
