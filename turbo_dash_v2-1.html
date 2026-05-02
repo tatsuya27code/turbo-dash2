@@ -293,8 +293,13 @@ const btnCenter = document.getElementById('btn-center');
 
                  
 };
-btnCenter.addEventListener('click',cFire);
+
+ btnCenter.addEventListener('mousedown',cFire);
 btnCenter.addEventListener('touchstart',cFire,{passive:false});
+btnCenter.addEventListener('touchend',cEnd,{passive:false});
+
+//btnCenter.addEventListener('click',cFire);
+//btnCenter.addEventListener('touchstart',cFire,{passive:false});
 
 // ═══════════════════════════════════════════
 //  SPAWN
