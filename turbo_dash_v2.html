@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>TURBO DASH</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #04040f;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    min-height: 100vh; overflow: hidden;
+    font-family: 'Share Tech Mono', monospace;
+  }
+  #game-wrapper { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  #gameCanvas {
+    display: block;
+    border: 1px solid rgba(0,255,200,0.25);
+    box-shadow: 0 0 18px rgba(0,255,200,0.15), 0 0 50px rgba(0,255,200,0.05);
+    image-rendering: pixelated;
+  }
+  #btn-row { display: flex; gap: 10px; width: 100%; }
+  .btn {
+    flex: 1; background: rgba(0,255,200,0.07);
+    border: 1px solid rgba(0,255,200,0.3);
+    color: #00ffc8; font-family: 'Orbitron', sans-serif;
+    font-size: 22px; font-weight: 700;
+    padding: 14px 0; border-radius: 6px; cursor: pointer;
+    user-select: none; -webkit-user-select: none; touch-action: none;
+    text-align: center; transition: background 0.1s;
+  }
+  .btn:active, .btn.held { background: rgba(0,255,200,0.2); box-shadow: 0 0 12px rgba(0,255,200,0.3); }
+  #btn-center {
+    background: rgba(255,60,100,0.1); border-color: rgba(255,60,100,0.4);
+    color: #ff3c64; font-size: 11px; letter-spacing: 2px; line-height: 1.4;
+  }
+  #btn-center:active { background: rgba(255,60,100,0.25); }
+</style>
+</head>
+<body>
+<div id="game-wrapper">
+  <canvas id="gameCanvas"></canvas>
+  <div id="btn-row">
+    <button class="btn" id="btn-left">◀</button>
+    <button class="btn" id="btn-center">START<br>ACTION</button>
+    <button class="btn" id="btn-right">▶</button>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+//  CANVAS
+// ═══════════════════════════════════════════
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+const LW = 400, LH = 600;
+
+function resize() {
+  const mxH = window.innerHeight - 94;
+  const mxW = window.innerWidth  - 16;
+  const ratio = LW / LH;
+  let ch = Math.min(LH, mxH);
+  let cw = ch * ratio;
+  if (cw > mxW) { cw = mxW; ch = cw / ratio; }
+  canvas.style.width  = cw + 'px';
+  canvas.style.height = ch + 'px';
+  canvas.width  = LW;
+  canvas.height = LH;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ═══════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════
+const ROAD_L = 68, ROAD_R = 332;
+const ROAD_W = ROAD_R - ROAD_L;
+const LANES  = 3;
+const LANE_W = ROAD_W / LANES;
+function laneX(l){ return ROAD_L + LANE_W * l + LANE_W / 2; }
+
+const ENEMY_COLORS = [
+  ['#ff2244','#ff7799'],
+  ['#ff8800','#ffcc66'],
+  ['#cc00ff','#ee88ff'],
+  ['#ff0088','#ff77cc'],
+  ['#ddff00','#eeff99'],
+];
+
+// ═══════════════════════════════════════════
+//  ADVERTISEMENT HOOKS
+//  ここに広告SDKのコードを追加してください
+// ═══════════════════════════════════════════
+function showAd(type) {
+  // type: 'gameover' | 'continue'
+  console.log(`[AD] ${type} 広告タイミング`);
+  // 例) Google AdSense Interstitial:
+  // if(window.adsbygoogle) adsbygoogle.push({});
+}
+
+// ═══════════════════════════════════════════
+//  STATE
+//  START | HOWTO | PLAYING | STAGECLEAR | SHOP | GAMEOVER
+// ═══════════════════════════════════════════
+let STATE = 'START';
+let frame = 0;
+
+// ─── セッション引き継ぎ ───────────────────
+let coins     = 0;
+let bestScore = 0;
+// upgrades: 各0始まりの強化レベル
+let upgrades  = { shield:0, lives:0, magnet:0, boost:0 };
+
+// ─── ランごと ────────────────────────────
+let score, lives, maxLives, gameSpeed;
+let roadOff, spawnTimer, spawnInt;
+let combo, comboTimer;
+let stageProgress, stageGoal;
+let world, level;
+let clearTimer, clearBonusPts, clearBonusCoins;
+let player, enemies, particles, sparks;
+
+// ─── ショップ ─────────────────────────────
+const SHOP = [
+  { id:'shield', icon:'🛡', name:'シールド強化',
+    descs:['無敵 +1秒','無敵 +2秒','無敵 +3秒'],
+    costs:[5,10,20], max:3 },
+  { id:'lives',  icon:'🚗', name:'HP拡張',
+    descs:['最大ライフ +1','最大ライフ +2'],
+    costs:[8,15], max:2 },
+  { id:'magnet', icon:'🧲', name:'コインマグネット',
+    descs:['引き寄せ Lv1','引き寄せ Lv2'],
+    costs:[6,12], max:2 },
+  { id:'boost',  icon:'⚡', name:'スコアブースト',
+    descs:['スコア ×1.2','スコア ×1.5','スコア ×2.0'],
+    costs:[4,8,16], max:3 },
+];
+let shopCursor = SHOP.length; // 最初は「次へ」を選択
+let shopMsg = '', shopMsgTimer = 0;
+
+// ═══════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════
+function newGame() {
+  coins    = 0;
+  upgrades = { shield:0, lives:0, magnet:0, boost:0 };
+  world = 1; level = 1;
+  score = 0;
+  startStage();
+}
+
+function stageGoalFor(w,l){ return 340 + (w-1)*100 + (l-1)*55; }
+
+function startStage() {
+  maxLives   = 3 + upgrades.lives;
+  lives      = maxLives;
+  gameSpeed  = 3.5 + (world-1)*0.55 + (level-1)*0.22;
+  roadOff    = 0;
+  spawnTimer = 0;
+  spawnInt   = 185;
+  combo      = 0;
+  comboTimer = 0;
+  stageProgress = 0;
+  stageGoal  = stageGoalFor(world, level);
+  clearTimer = 0;
+  enemies = []; particles = []; sparks = [];
+  initPlayer();
+  STATE = 'PLAYING';
+}
+
+function nextStage() {
+  level++;
+  if (level > 3) { level = 1; world++; }
+  startStage();
+}
+
+function initPlayer() {
+  player = {
+    x:laneX(1), y:490, w:36, h:60,
+    lane:1, tx:laneX(1),
+    invincible:false, invTimer:0,
+    trail:[],
+  };
+}
+
+function scoreMultiplier() {
+  return [1, 1.2, 1.5, 2.0][upgrades.boost] || 1;
+}
+
+// ═══════════════════════════════════════════
+//  INPUT
+// ═══════════════════════════════════════════
+const keys = {};
+let leftHeld=false, rightHeld=false, moveCd=0;
+
+document.addEventListener('keydown', e=>{
+  if (keys[e.key]) return;
+  keys[e.key] = true;
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' ','Enter'].includes(e.key))
+    e.preventDefault();
+  onKey(e.key);
+});
+document.addEventListener('keyup', e=>{ keys[e.key]=false; });
+
+function onKey(k) {
+  if (STATE==='START')     { STATE='HOWTO'; return; }
+  if (STATE==='HOWTO')     { newGame(); return; }
+  if (STATE==='STAGECLEAR'){ return; }
+  if (STATE==='SHOP')      { shopKey(k); return; }
+  if (STATE==='GAMEOVER')  { STATE='START'; return; }
+  // PLAYING
+  if (k==='ArrowLeft')  tryMove(-1);
+  if (k==='ArrowRight') tryMove(+1);
+}
+
+function shopKey(k) {
+  const total = SHOP.length + 1;
+  if (k==='ArrowLeft'||k==='ArrowUp')   shopCursor=(shopCursor-1+total)%total;
+  if (k==='ArrowRight'||k==='ArrowDown') shopCursor=(shopCursor+1)%total;
+  if (k===' '||k==='Enter') doShop();
+}
+
+function doShop() {
+  if (shopCursor===SHOP.length) { nextStage(); return; }
+  buyItem(shopCursor);
+}
+
+function buyItem(i) {
+  const it  = SHOP[i];
+  const lv  = upgrades[it.id];
+  if (lv >= it.max)           { shopMsg='✗ 最大レベル'; shopMsgTimer=90; return; }
+  if (coins < it.costs[lv])   { shopMsg='✗ コイン不足'; shopMsgTimer=90; return; }
+  coins -= it.costs[lv];
+  upgrades[it.id]++;
+  shopMsg=`✓ ${it.name} Lv${upgrades[it.id]} 購入！`;
+  shopMsgTimer=110;
+}
+
+function tryMove(dir) {
+  const nl = player.lane + dir;
+  if (nl>=0 && nl<LANES) { player.lane=nl; player.tx=laneX(nl); }
+}
+
+// ─── ボタン ──────────────────────────────
+function bind(id, dn, up) {
+  const el = document.getElementById(id);
+  const d = e=>{ e.preventDefault(); dn(); el.classList.add('held'); };
+  const u = e=>{ e.preventDefault(); if(up)up(); el.classList.remove('held'); };
+  el.addEventListener('touchstart',d,{passive:false});
+  el.addEventListener('touchend',  u,{passive:false});
+  el.addEventListener('mousedown', d);
+  el.addEventListener('mouseup',   u);
+}
+
+bind('btn-left',
+  ()=>{ leftHeld=true;
+    if(STATE==='SHOP'){ const t=SHOP.length+1; shopCursor=(shopCursor-1+t)%t; }
+    else { tryMove(-1); moveCd=22; }
+  },
+  ()=>{ leftHeld=false; }
+);
+bind('btn-right',
+  ()=>{ rightHeld=true;
+    if(STATE==='SHOP'){ const t=SHOP.length+1; shopCursor=(shopCursor+1)%t; }
+    else { tryMove(+1); moveCd=22; }
+  },
+  ()=>{ rightHeld=false; }
+);
+
+const btnCenter = document.getElementById('btn-center');
+const cFire = e=>{ e.preventDefault();
+  if(STATE==='START')    { STATE='HOWTO'; return; }
+  if(STATE==='HOWTO')    { newGame(); return; }
+  if(STATE==='SHOP')     { doShop(); return; }
+  if(STATE==='GAMEOVER') { STATE='START'; return; }
+};
+btnCenter.addEventListener('click',cFire);
+btnCenter.addEventListener('touchstart',cFire,{passive:false});
+
+// ═══════════════════════════════════════════
+//  SPAWN
+// ═══════════════════════════════════════════
+function spawnEnemy() {
+  let lane;
+  for(let i=0;i<6;i++){
+    lane=Math.floor(Math.random()*LANES);
+    const last=enemies.filter(e=>e.lane===lane&&e.type==='car').sort((a,b)=>b.y-a.y)[0];
+    if(!last||last.y>95) break;
+  }
+
+  if(Math.random()<0.22){
+    // コイン
+    enemies.push({ x:laneX(lane), y:-38, w:28,h:28, lane,
+      type:'coin', spd:0.5+Math.random()*0.3, angle:0, passed:false });
+  } else {
+    const c=ENEMY_COLORS[Math.floor(Math.random()*ENEMY_COLORS.length)];
+    enemies.push({ x:laneX(lane), tx:laneX(lane), y:-82, w:34,h:58, lane,
+      type:'car', color:c[0], shine:c[1],
+      spd:0.5+Math.random()*0.4, passed:false,
+      switchCd:90+Math.floor(Math.random()*130) });
+  }
+}
+
+// ═══════════════════════════════════════════
+//  PARTICLES
+// ═══════════════════════════════════════════
+function explode(x,y,hue){
+  for(let i=0;i<26;i++){
+    const a=Math.random()*Math.PI*2, s=2+Math.random()*7;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,
+      life:1,size:3+Math.random()*5,hue:hue+Math.random()*30});
+  }
+}
+function coinBurst(x,y){
+  for(let i=0;i<16;i++){
+    const a=Math.random()*Math.PI*2,s=1+Math.random()*5;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,
+      life:1,size:3+Math.random()*4,hue:44+Math.random()*16});
+  }
+}
+function addSparks(x,y){
+  for(let i=0;i<12;i++){
+    const a=Math.PI/2+(Math.random()-0.5)*Math.PI;
+    sparks.push({x,y,vx:Math.cos(a)*(1+Math.random()*3),
+      vy:Math.sin(a)*(1+Math.random()*3),life:1});
+  }
+}
+
+// ═══════════════════════════════════════════
+//  COLLISION
+// ═══════════════════════════════════════════
+function hits(a,b){
+  return Math.abs(a.x-b.x)<(a.w+b.w)/2-7 && Math.abs(a.y-b.y)<(a.h+b.h)/2-7;
+}
+
+// ═══════════════════════════════════════════
+//  UPDATE
+// ═══════════════════════════════════════════
+function update(){
+  frame++;
+  scrollDecor();
+
+  if(STATE==='STAGECLEAR'){
+    clearTimer++;
+    tickParticles();
+    if(clearTimer>140){ STATE='SHOP'; shopCursor=SHOP.length; }
+    return;
+  }
+  if(STATE!=='PLAYING') return;
+
+  // スコア・速度
+  score      += gameSpeed * 0.07 * scoreMultiplier();
+  gameSpeed   = Math.min(13, (3.5+(world-1)*0.55+(level-1)*0.22) + frame/540);
+  spawnInt    = Math.max(78, 185 - frame/38);
+  stageProgress++;
+
+  // ステージクリア判定
+  if(stageProgress>=stageGoal){
+    clearBonusPts   = 500 + world*110 + level*55;
+    clearBonusCoins = 2 + world + level;
+    score += clearBonusPts;
+    coins += clearBonusCoins;
+    explode(LW/2,LH/3,190); explode(LW*0.3,LH/2,55); explode(LW*0.7,LH/2,280);
+    STATE='STAGECLEAR'; clearTimer=0;
+    return;
+  }
+
+  // ホールド操作
+  moveCd--;
+  if(moveCd<=0){
+    if(leftHeld)  { tryMove(-1); moveCd=20; }
+    if(rightHeld) { tryMove(+1); moveCd=20; }
+  }
+
+  // プレイヤー
+  player.x += (player.tx-player.x)*0.16;
+  player.trail.unshift({x:player.x,y:player.y});
+  if(player.trail.length>12) player.trail.pop();
+  if(player.invincible){ player.invTimer--; if(player.invTimer<=0) player.invincible=false; }
+  if(comboTimer>0) comboTimer--; else combo=0;
+
+  // スポーン
+  spawnTimer++;
+  if(spawnTimer>=spawnInt){ spawnEnemy(); spawnTimer=0; }
+
+  // 磁石範囲
+  const magR=[0,90,160][upgrades.magnet]||0;
+
+  // 敵移動
+  for(const e of enemies){
+    e.y += e.spd + gameSpeed*0.72;
+    if(e.type==='coin'){
+      e.angle+=0.09;
+      if(magR>0){
+        const d=Math.hypot(player.x-e.x,player.y-e.y);
+        if(d<magR){ e.x+=(player.x-e.x)*0.09; e.y+=(player.y-e.y)*0.09; }
+      }
+    } else {
+      // まれに車線変更
+      e.switchCd--;
+      if(e.switchCd<=0){
+        e.switchCd=90+Math.floor(Math.random()*140);
+        if(Math.random()<0.2){
+          const dir=Math.random()<0.5?-1:1;
+          const nl=e.lane+dir;
+          if(nl>=0&&nl<LANES){ e.lane=nl; e.tx=laneX(nl); }
+        }
+      }
+      e.x+=(e.tx-e.x)*0.08;
+    }
+    if(!e.passed&&e.y>player.y+player.h){
+      e.passed=true;
+      if(e.type==='car'){ combo++; comboTimer=200; }
+    }
+  }
+  enemies=enemies.filter(e=>e.y<LH+100);
+
+  // 衝突
+  for(let i=enemies.length-1;i>=0;i--){
+    const e=enemies[i];
+    if(!hits(player,e)) continue;
+    if(e.type==='coin'){
+      coins++;
+      score+=Math.floor(300*scoreMultiplier());
+      coinBurst(e.x,e.y);
+      enemies.splice(i,1);
+    } else {
+      if(player.invincible){
+        // 無敵中→敵車撃破！
+        score+=Math.floor(600*scoreMultiplier());
+        coins++;
+        explode(e.x,e.y,120);
+        enemies.splice(i,1);
+      } else {
+        lives--;
+        combo=0;
+        explode(player.x,player.y,10);
+        addSparks(player.x,player.y-20);
+        player.invincible=true;
+        player.invTimer=145+(upgrades.shield*55);
+        if(lives<=0){
+          STATE='GAMEOVER';
+          if(score>bestScore) bestScore=score;
+          showAd('gameover'); // ← 広告タイミング①
+        }
+        break;
+      }
+    }
+  }
+  tickParticles();
+}
+
+function tickParticles(){
+  for(const p of particles){
+    p.x+=p.vx; p.y+=p.vy;
+    p.vx*=0.93; p.vy*=0.93; p.vy+=0.14;
+    p.life-=0.022;
+  }
+  particles=particles.filter(p=>p.life>0);
+  for(const s of sparks){
+    s.x+=s.vx; s.y+=s.vy; s.vx*=0.88; s.life-=0.035;
+  }
+  sparks=sparks.filter(s=>s.life>0);
+}
+
+// ═══════════════════════════════════════════
+//  DECOR
+// ═══════════════════════════════════════════
+const sideDecor=[];
+for(let i=0;i<10;i++){
+  sideDecor.push({side:0,y:i*90-40,phase:i*0.4});
+  sideDecor.push({side:1,y:i*90-40,phase:i*0.4+0.2});
+}
+const sideDots=Array.from({length:60},()=>({
+  x:Math.random()<0.5?ROAD_L-4-Math.random()*(ROAD_L-4):ROAD_R+4+Math.random()*(LW-ROAD_R-4),
+  y:Math.random()*LH, r:Math.random()*1.5+0.5, spd:Math.random()*0.4+0.2,
+}));
+
+function scrollDecor(){
+  const spd=STATE==='PLAYING'||STATE==='STAGECLEAR'?gameSpeed:2;
+  roadOff=(roadOff||0)+spd; roadOff%=70;
+  for(const d of sideDecor){ d.y+=spd*0.9; if(d.y>LH+40) d.y-=10*90; }
+  for(const d of sideDots){ d.y+=d.spd+spd*0.15; if(d.y>LH) d.y=0; }
+}
+
+// ═══════════════════════════════════════════
+//  DRAW HELPERS
+// ═══════════════════════════════════════════
+function rr(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r); ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h); ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r); ctx.arcTo(x,y,x+r,y,r);
+  ctx.closePath();
+}
+
+// ═══════════════════════════════════════════
+//  DRAW ROAD
+// ═══════════════════════════════════════════
+function drawRoad(){
+  ctx.fillStyle='#06060f'; ctx.fillRect(0,0,LW,LH);
+
+  for(const d of sideDots){
+    ctx.globalAlpha=0.35+Math.sin(frame*0.03+d.y)*0.2;
+    ctx.fillStyle='#88aaff';
+    ctx.beginPath(); ctx.arc(d.x,d.y,d.r,0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  const rg=ctx.createLinearGradient(ROAD_L,0,ROAD_R,0);
+  rg.addColorStop(0,'#101018'); rg.addColorStop(0.5,'#141422'); rg.addColorStop(1,'#101018');
+  ctx.fillStyle=rg; ctx.fillRect(ROAD_L,0,ROAD_W,LH);
+
+  for(let y=-60;y<LH+60;y+=24){
+    const ty=y+(roadOff*1.2)%48;
+    ctx.fillStyle=Math.floor(ty/24)%2===0?'#cc2200':'#ffffff';
+    ctx.fillRect(ROAD_L-8,ty,8,24); ctx.fillRect(ROAD_R,ty,8,24);
+  }
+
+  const lgg=ctx.createLinearGradient(ROAD_L,0,ROAD_L-4,0);
+  lgg.addColorStop(0,'rgba(255,80,0,0.5)'); lgg.addColorStop(1,'transparent');
+  const rgg=ctx.createLinearGradient(ROAD_R,0,ROAD_R+4,0);
+  rgg.addColorStop(0,'rgba(255,80,0,0.5)'); rgg.addColorStop(1,'transparent');
+  ctx.fillStyle=lgg; ctx.fillRect(ROAD_L-4,0,4,LH);
+  ctx.fillStyle=rgg; ctx.fillRect(ROAD_R,0,4,LH);
+
+  const dH=42,dG=28,per=dH+dG;
+  ctx.setLineDash([dH,dG]);
+  for(let l=1;l<LANES;l++){
+    const x=ROAD_L+LANE_W*l;
+    ctx.lineDashOffset=-(roadOff%per);
+    ctx.strokeStyle='rgba(255,255,255,0.16)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,LH); ctx.stroke();
+    ctx.strokeStyle='rgba(255,255,255,0.04)'; ctx.lineWidth=8;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,LH); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  for(const d of sideDecor){
+    const px=d.side===0?ROAD_L-22:ROAD_R+22;
+    const py=d.y%(LH+40);
+    ctx.strokeStyle='rgba(100,140,180,0.27)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(px,py+38); ctx.stroke();
+    const p=0.7+Math.sin(frame*0.04+d.phase)*0.3;
+    ctx.save();
+    ctx.shadowColor=`rgba(0,200,255,${p*0.7})`; ctx.shadowBlur=10;
+    ctx.fillStyle=`rgba(0,200,255,${p*0.9})`;
+    ctx.beginPath(); ctx.arc(px,py,4,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+
+  // 進捗バー
+  if(STATE==='PLAYING'){
+    const pct=Math.min(1,stageProgress/stageGoal);
+    ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(ROAD_L,LH-7,ROAD_W,7);
+    const pg=ctx.createLinearGradient(ROAD_L,0,ROAD_L+ROAD_W*pct,0);
+    pg.addColorStop(0,'#00ffc8'); pg.addColorStop(1,'#00aaff');
+    ctx.fillStyle=pg; ctx.fillRect(ROAD_L,LH-7,ROAD_W*pct,7);
+    ctx.font='11px monospace'; ctx.textAlign='right'; ctx.textBaseline='bottom';
+    ctx.fillStyle='#ffff88'; ctx.fillText('🏁',ROAD_R,LH-8);
+  }
+}
+
+// ═══════════════════════════════════════════
+//  DRAW CARS
+// ═══════════════════════════════════════════
+function drawEnemyCar(e){
+  if(e.type==='coin'){
+    ctx.save(); ctx.translate(e.x,e.y); ctx.rotate(e.angle);
+    const cg=ctx.createRadialGradient(0,0,2,0,0,13);
+    cg.addColorStop(0,'#ffee55'); cg.addColorStop(1,'#ff9900');
+    ctx.fillStyle=cg;
+    ctx.shadowColor='#ffdd00'; ctx.shadowBlur=16;
+    ctx.beginPath(); ctx.ellipse(0,0,13,13,0,0,Math.PI*2); ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.fillStyle='#fff8cc'; ctx.font='bold 12px monospace';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('¥',0,1);
+    ctx.restore(); return;
+  }
+  const {x,y,w,h,color,shine}=e;
+  ctx.save(); ctx.translate(x,y);
+  ctx.fillStyle='rgba(0,0,0,0.35)'; rr(-w/2+3,-h/2+4,w,h,8); ctx.fill();
+  ctx.fillStyle=color; rr(-w/2,-h/2,w,h,8); ctx.fill();
+  ctx.fillStyle=shine+'44'; rr(-w/2+4,-h/2+4,w-8,h/2-4,5); ctx.fill();
+  ctx.fillStyle='rgba(0,0,0,0.52)'; rr(-w/2+5,h/2-23,w-10,15,3); ctx.fill();
+  ctx.fillStyle='#ffffcc';
+  ctx.fillRect(-w/2+4,h/2-5,10,5); ctx.fillRect(w/2-14,h/2-5,10,5);
+  ctx.fillStyle='#ff2200';
+  ctx.fillRect(-w/2+4,-h/2,10,5); ctx.fillRect(w/2-14,-h/2,10,5);
+  ctx.restore();
+}
+
+function drawPlayer(){
+  if(player.invincible&&Math.floor(frame/5)%2===1) return;
+  const {x,y,w,h,trail}=player;
+  for(let i=0;i<trail.length;i++){
+    const t=trail[i];
+    ctx.globalAlpha=(1-i/trail.length)*0.22;
+    ctx.fillStyle='#00aaff';
+    rr(t.x-w/2+6,t.y+h/2-4,w-12,6,3); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  ctx.save();
+  ctx.shadowColor='#00ccff'; ctx.shadowBlur=24;
+  ctx.fillStyle='#00ccff'; rr(x-w/2,y-h/2,w,h,8); ctx.fill();
+  ctx.restore();
+  ctx.save(); ctx.translate(x,y);
+  ctx.fillStyle='rgba(0,0,0,0.38)'; rr(-w/2+3,-h/2+4,w,h,8); ctx.fill();
+  const bg=ctx.createLinearGradient(-w/2,0,w/2,0);
+  bg.addColorStop(0,'#0066cc'); bg.addColorStop(0.5,'#00aaff'); bg.addColorStop(1,'#0066cc');
+  ctx.fillStyle=bg; rr(-w/2,-h/2,w,h,8); ctx.fill();
+  ctx.fillStyle='rgba(180,240,255,0.35)'; rr(-w/2+5,-h/2+5,w-10,h/3,4); ctx.fill();
+  ctx.fillStyle='rgba(0,220,255,0.55)'; rr(-w/2+5,-h/2+8,w-10,18,3); ctx.fill();
+  ctx.fillStyle='#ffffcc'; ctx.shadowColor='#ffffaa'; ctx.shadowBlur=8;
+  ctx.fillRect(-w/2+4,-h/2,10,5); ctx.fillRect(w/2-14,-h/2,10,5);
+  ctx.shadowBlur=0;
+  ctx.fillStyle='#ff2200'; ctx.shadowColor='#ff3300'; ctx.shadowBlur=6;
+  ctx.fillRect(-w/2+4,h/2-5,10,5); ctx.fillRect(w/2-14,h/2-5,10,5);
+  ctx.shadowBlur=0;
+  ctx.fillStyle='rgba(255,255,255,0.1)'; ctx.fillRect(-3,-h/2,6,h);
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════
+//  HUD ライフアイコン（ミニカー）
+// ═══════════════════════════════════════════
+function drawCarIcon(cx,cy,active){
+  ctx.save(); ctx.translate(cx,cy); ctx.scale(0.35,0.35);
+  if(active){ ctx.shadowColor='#00ccff'; ctx.shadowBlur=12; }
+  ctx.fillStyle=active?'#0088dd':'#1a1a2e';
+  rr(-15,-24,30,48,6); ctx.fill();
+  ctx.shadowBlur=0;
+  ctx.fillStyle=active?'rgba(0,220,255,0.6)':'#0c0c1e';
+  rr(-11,-22,22,14,3); ctx.fill();
+  ctx.fillStyle=active?'#ffffcc':'#111128';
+  ctx.fillRect(-13,14,9,5); ctx.fillRect(4,14,9,5);
+  ctx.fillStyle=active?'#ff2200':'#111128';
+  ctx.fillRect(-13,-20,9,5); ctx.fillRect(4,-20,9,5);
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════
+//  HUD
+// ═══════════════════════════════════════════
+function drawHUD(){
+  ctx.fillStyle='rgba(0,0,12,0.82)'; ctx.fillRect(0,0,LW,50);
+  ctx.strokeStyle='rgba(0,255,200,0.1)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0,50); ctx.lineTo(LW,50); ctx.stroke();
+  ctx.textBaseline='middle';
+
+  // ステージ
+  ctx.fillStyle='#ff9900'; ctx.font='bold 10px "Orbitron",monospace'; ctx.textAlign='center';
+  ctx.fillText(`WORLD  ${world}-${level}`,LW/2,14);
+
+  // スコア
+  ctx.fillStyle='#00ffc8'; ctx.font='bold 11px "Orbitron",monospace'; ctx.textAlign='left';
+  ctx.fillText('SCORE',10,24);
+  ctx.font='bold 15px "Orbitron",monospace';
+  ctx.fillText(Math.floor(score).toString().padStart(7,'0'),10,40);
+
+  // km/h
+  ctx.fillStyle='rgba(255,190,50,0.6)'; ctx.font='9px "Share Tech Mono",monospace';
+  ctx.textAlign='center'; ctx.fillText(`${Math.floor(gameSpeed*25)} km/h`,LW/2,36);
+
+  // コンボ
+  if(combo>=3&&comboTimer>0){
+    ctx.globalAlpha=0.7+Math.sin(frame*0.22)*0.3;
+    ctx.fillStyle='#ffee00'; ctx.font='bold 9px "Orbitron",monospace';
+    ctx.textAlign='center'; ctx.fillText(`×${combo} COMBO!`,LW/2,47);
+    ctx.globalAlpha=1;
+  }
+
+  // コイン
+  ctx.fillStyle='#ffdd00'; ctx.font='bold 12px "Orbitron",monospace';
+  ctx.textAlign='right'; ctx.fillText(`¥${coins}`,LW-12,24);
+
+  // ライフアイコン（ミニカー）
+  const show=Math.min(maxLives,5);
+  for(let i=0;i<show;i++){
+    drawCarIcon(LW-14-i*22,41,i<lives);
+  }
+}
+
+// ═══════════════════════════════════════════
+//  PARTICLES DRAW
+// ═══════════════════════════════════════════
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha=p.life;
+    ctx.fillStyle=`hsl(${p.hue},100%,${50+p.life*20}%)`;
+    rr(p.x-p.size/2,p.y-p.size/2,p.size,p.size,2); ctx.fill();
+  }
+  for(const s of sparks){
+    ctx.globalAlpha=s.life*0.8;
+    ctx.strokeStyle=`rgba(255,220,80,${s.life})`; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(s.x,s.y); ctx.lineTo(s.x-s.vx*4,s.y-s.vy*4); ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+}
+
+// ═══════════════════════════════════════════
+//  SCREEN: START
+// ═══════════════════════════════════════════
+function drawStart(){
+  ctx.fillStyle='rgba(2,2,14,0.92)'; ctx.fillRect(0,0,LW,LH);
+  ctx.strokeStyle='rgba(0,255,200,0.05)'; ctx.lineWidth=1;
+  for(let l=1;l<LANES;l++){
+    const x=ROAD_L+LANE_W*l;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,LH); ctx.stroke();
+  }
+  ctx.save(); ctx.shadowColor='#00ffc8'; ctx.shadowBlur=44;
+  ctx.fillStyle='#00ffc8'; ctx.font='bold 52px "Orbitron",monospace';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('TURBO',LW/2,LH/2-82); ctx.restore();
+  ctx.save(); ctx.shadowColor='#ff3364'; ctx.shadowBlur=34;
+  ctx.fillStyle='#ff3364'; ctx.font='bold 52px "Orbitron",monospace';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('DASH',LW/2,LH/2-26); ctx.restore();
+  ctx.fillStyle='rgba(160,190,255,0.7)'; ctx.font='12px "Share Tech Mono",monospace';
+  ctx.textAlign='center';
+  ctx.fillText('◀ ▶ で車線変更  コインを集めて強くなれ！',LW/2,LH/2+36);
+  const p=0.55+Math.sin(frame*0.06)*0.45;
+  ctx.globalAlpha=p; ctx.fillStyle='#00ffc8';
+  ctx.font='bold 13px "Orbitron",monospace';
+  ctx.fillText('PRESS ANY KEY / START',LW/2,LH/2+96);
+  ctx.globalAlpha=1;
+  ctx.fillStyle='rgba(80,80,120,0.45)'; ctx.font='10px "Share Tech Mono",monospace';
+  ctx.fillText('v2.0',LW/2,LH-14);
+}
+
+// ═══════════════════════════════════════════
+//  SCREEN: HOW TO PLAY
+// ═══════════════════════════════════════════
+function drawHowTo(){
+  ctx.fillStyle='rgba(2,2,14,0.97)'; ctx.fillRect(0,0,LW,LH);
+  ctx.save(); ctx.shadowColor='#00ffc8'; ctx.shadowBlur=20;
+  ctx.fillStyle='#00ffc8'; ctx.font='bold 18px "Orbitron",monospace';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('HOW TO PLAY',LW/2,50); ctx.restore();
+  ctx.strokeStyle='rgba(0,255,200,0.2)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(28,72); ctx.lineTo(LW-28,72); ctx.stroke();
+
+  const rows=[
+    ['◀▶','キー/ボタンで車線変更'],
+    ['🪙','コインを取ると獲得 & 加点'],
+    ['💥','敵車に当たるとライフ -1'],
+    ['🛡','被弾後は一定時間無敵'],
+    ['⭐','無敵中に敵車を倒すと加点！'],
+    ['🚗','ライフは車アイコンで表示'],
+    ['🏁','ゴールでステージクリア & ボーナス'],
+    ['🛒','クリア後ショップでコインを使い強化'],
+  ];
+  let y=100;
+  for(const [ic,tx] of rows){
+    ctx.fillStyle='rgba(255,255,255,0.035)';
+    rr(20,y-15,LW-40,30,5); ctx.fill();
+    ctx.font='15px monospace'; ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillStyle='#ffdd88'; ctx.fillText(ic,34,y);
+    ctx.font='11px "Share Tech Mono",monospace';
+    ctx.fillStyle='#baccee'; ctx.fillText(tx,80,y);
+    y+=38;
+  }
+  const p=0.5+Math.sin(frame*0.09)*0.5;
+  ctx.globalAlpha=p; ctx.fillStyle='#00ffc8';
+  ctx.font='bold 12px "Orbitron",monospace'; ctx.textAlign='center';
+  ctx.fillText('TAP / PRESS TO START',LW/2,LH-36);
+  ctx.globalAlpha=1;
+}
+
+// ═══════════════════════════════════════════
+//  SCREEN: STAGE CLEAR
+// ═══════════════════════════════════════════
+function drawStageClear(){
+  ctx.fillStyle='rgba(0,0,8,0.74)'; ctx.fillRect(0,0,LW,LH);
+  ctx.save(); ctx.shadowColor='#ffee00'; ctx.shadowBlur=40;
+  ctx.fillStyle='#ffee00'; ctx.font='bold 34px "Orbitron",monospace';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('STAGE CLEAR!',LW/2,LH/2-52); ctx.restore();
+  ctx.fillStyle='#00ffc8'; ctx.font='13px "Share Tech Mono",monospace';
+  ctx.textAlign='center'; ctx.fillText(`BONUS  +${clearBonusPts} pts`,LW/2,LH/2+4);
+  ctx.fillStyle='#ffdd00'; ctx.fillText(`COIN  +${clearBonusCoins}`,LW/2,LH/2+26);
+  ctx.fillStyle='rgba(180,200,255,0.5)'; ctx.font='10px "Share Tech Mono",monospace';
+  ctx.fillText('ショップへ移動中…',LW/2,LH/2+56);
+}
+
+// ═══════════════════════════════════════════
+//  SCREEN: SHOP
+// ═══════════════════════════════════════════
+function drawShop(){
+  ctx.fillStyle='rgba(2,2,14,0.98)'; ctx.fillRect(0,0,LW,LH);
+  ctx.save(); ctx.shadowColor='#ffaa00'; ctx.shadowBlur=22;
+  ctx.fillStyle='#ffaa00'; ctx.font='bold 21px "Orbitron",monospace';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('🛒  SHOP',LW/2,36); ctx.restore();
+  ctx.fillStyle='#ffdd00'; ctx.font='bold 14px "Orbitron",monospace';
+  ctx.textAlign='center'; ctx.fillText(`¥  ${coins}  COINS`,LW/2,64);
+  ctx.strokeStyle='rgba(255,170,0,0.2)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(20,80); ctx.lineTo(LW-20,80); ctx.stroke();
+
+  const iH=70, sy=86;
+  for(let i=0;i<SHOP.length;i++){
+    const it=SHOP[i], lv=upgrades[it.id], maxed=lv>=it.max, sel=i===shopCursor;
+    const y=sy+i*iH;
+    ctx.fillStyle=sel?'rgba(0,255,200,0.08)':'rgba(255,255,255,0.02)';
+    rr(14,y,LW-28,iH-4,8); ctx.fill();
+    ctx.strokeStyle=sel?'#00ffc8':'rgba(255,255,255,0.06)';
+    ctx.lineWidth=sel?1.5:1;
+    rr(14,y,LW-28,iH-4,8); ctx.stroke();
+    ctx.font='18px monospace'; ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillText(it.icon,28,y+17);
+    ctx.fillStyle='#ffffff'; ctx.font='bold 11px "Orbitron",monospace';
+    ctx.fillText(it.name,56,y+16);
+    for(let d=0;d<it.max;d++){
+      ctx.fillStyle=d<lv?'#00ffc8':'#1e1e33';
+      ctx.beginPath(); ctx.arc(56+d*14,y+34,5,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.arc(56+d*14,y+34,5,0,Math.PI*2); ctx.stroke();
+    }
+    if(maxed){
+      ctx.fillStyle='#555577'; ctx.font='9px "Share Tech Mono",monospace';
+      ctx.textAlign='left'; ctx.fillText('MAX LEVEL',56,y+50);
+    } else {
+      ctx.fillStyle='#99aacc'; ctx.font='9px "Share Tech Mono",monospace';
+      ctx.textAlign='left'; ctx.fillText(it.descs[lv],56,y+50);
+      ctx.fillStyle=coins>=it.costs[lv]?'#ffdd00':'#774433';
+      ctx.font='bold 11px "Orbitron",monospace'; ctx.textAlign='right';
+      ctx.fillText(`¥${it.costs[lv]}`,LW-26,y+32);
+    }
+  }
+
+  // 次のステージへ
+  const goY=sy+SHOP.length*iH+2;
+  const goSel=shopCursor===SHOP.length;
+  ctx.fillStyle=goSel?'rgba(255,100,60,0.18)':'rgba(255,100,60,0.05)';
+  rr(14,goY,LW-28,38,8); ctx.fill();
+  ctx.strokeStyle=goSel?'#ff6644':'rgba(255,100,60,0.18)';
+  ctx.lineWidth=goSel?1.5:1;
+  rr(14,goY,LW-28,38,8); ctx.stroke();
+  ctx.fillStyle=goSel?'#ff9966':'rgba(255,150,100,0.45)';
+  ctx.font='bold 12px "Orbitron",monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('次のステージへ  ▶',LW/2,goY+19);
+
+  if(shopMsgTimer>0){
+    shopMsgTimer--;
+    ctx.globalAlpha=Math.min(1,shopMsgTimer/25);
+    ctx.fillStyle=shopMsg.startsWith('✓')?'#00ffc8':'#ff6644';
+    ctx.font='11px "Share Tech Mono",monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(shopMsg,LW/2,goY+50);
+    ctx.globalAlpha=1;
+  }
+
+  ctx.fillStyle='rgba(80,80,120,0.5)'; ctx.font='9px "Share Tech Mono",monospace';
+  ctx.textAlign='center'; ctx.textBaseline='bottom';
+  ctx.fillText('◀ ▶ で選択   ACTION で購入 / 次へ',LW/2,LH-8);
+}
+
+// ═══════════════════════════════════════════
+//  SCREEN: GAME OVER
+// ═══════════════════════════════════════════
+function drawGameOver(){
+  ctx.fillStyle='rgba(2,2,14,0.93)'; ctx.fillRect(0,0,LW,LH);
+  ctx.save(); ctx.shadowColor='#ff3364'; ctx.shadowBlur=50;
+  ctx.fillStyle='#ff3364'; ctx.font='bold 42px "Orbitron",monospace';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('GAME OVER',LW/2,LH/2-100); ctx.restore();
+  ctx.fillStyle='#ff9900'; ctx.font='12px "Share Tech Mono",monospace';
+  ctx.textAlign='center'; ctx.fillText(`WORLD ${world}-${level}  到達`,LW/2,LH/2-56);
+  ctx.fillStyle='#00ffc8'; ctx.font='11px "Share Tech Mono",monospace';
+  ctx.fillText('SCORE',LW/2,LH/2-20);
+  ctx.font='bold 29px "Orbitron",monospace';
+  ctx.fillText(Math.floor(score).toString().padStart(7,'0'),LW/2,LH/2+12);
+  if(bestScore>0){
+    const isNew=score>=bestScore;
+    ctx.fillStyle=isNew?'#ffee00':'rgba(200,100,255,0.8)';
+    ctx.font='11px "Share Tech Mono",monospace';
+    ctx.fillText(isNew?'★  NEW BEST!  ★':`BEST  ${Math.floor(bestScore).toString().padStart(7,'0')}`,LW/2,LH/2+46);
+  }
+  ctx.fillStyle='#ffdd00'; ctx.font='12px "Share Tech Mono",monospace';
+  ctx.fillText(`獲得コイン  ¥ ${coins}`,LW/2,LH/2+74);
+
+  // 広告プレースホルダー
+  ctx.fillStyle='rgba(36,36,66,0.75)';
+  rr(26,LH/2+96,LW-52,44,8); ctx.fill();
+  ctx.strokeStyle='rgba(80,80,130,0.35)'; ctx.lineWidth=1;
+  rr(26,LH/2+96,LW-52,44,8); ctx.stroke();
+  ctx.fillStyle='rgba(130,130,180,0.4)'; ctx.font='10px "Share Tech Mono",monospace';
+  ctx.fillText('[ 広告スペース ]',LW/2,LH/2+118);
+
+  const p=0.5+Math.sin(frame*0.06)*0.5;
+  ctx.globalAlpha=p; ctx.fillStyle='#ffaa00';
+  ctx.font='bold 12px "Orbitron",monospace';
+  ctx.fillText('PRESS ANY KEY / START',LW/2,LH-28);
+  ctx.globalAlpha=1;
+}
+
+// ═══════════════════════════════════════════
+//  MAIN LOOP
+// ═══════════════════════════════════════════
+function draw(){
+  ctx.clearRect(0,0,LW,LH);
+  drawRoad();
+  if(STATE==='START')      { drawStart();      return; }
+  if(STATE==='HOWTO')      { drawHowTo();      return; }
+  if(STATE==='SHOP')       { drawShop();       return; }
+  if(STATE==='GAMEOVER')   { drawGameOver();   return; }
+  // PLAYING / STAGECLEAR
+  for(const e of enemies) drawEnemyCar(e);
+  drawPlayer();
+  drawParticles();
+  drawHUD();
+  if(STATE==='STAGECLEAR') drawStageClear();
+}
+
+function loop(){
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// 初期化
+initPlayer();
+enemies=[]; particles=[]; sparks=[];
+loop();
+</script>
+</body>
+</html>
