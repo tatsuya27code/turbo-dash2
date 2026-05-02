@@ -345,10 +345,9 @@ function update(){
   if(STATE==='STAGECLEAR'){
     clearTimer++;
     tickParticles();
-    if(clearTimer>140){ STATE='SHOP'; shopCursor=SHOP.length; }
+    // 自動移動の行を消し、タイマーをカウントするだけにする
     return;
   }
-  if(STATE!=='PLAYING') return;
 
   // スコア・速度
   score      += gameSpeed * 0.07 * scoreMultiplier();
