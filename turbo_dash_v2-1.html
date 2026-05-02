@@ -270,11 +270,27 @@ bind('btn-right',
 );
 
 const btnCenter = document.getElementById('btn-center');
-const cFire = e=>{ e.preventDefault();
+ const cFire = e=>{ e.preventDefault();
   if(STATE==='START')    { STATE='HOWTO'; return; }
   if(STATE==='HOWTO')    { newGame(); return; }
+                   
+  // ★ ここが抜けているとボタンが反応しません
+  if(STATE==='STAGECLEAR') { 
+    STATE='SHOP'; 
+    shopCursor=0; // 最初のアイテムを選択状態にする
+    return; 
+  }
+  
   if(STATE==='SHOP')     { doShop(); return; }
   if(STATE==='GAMEOVER') { STATE='START'; return; }
+};
+
+ 
+ 
+ 
+
+
+                  
 };
 btnCenter.addEventListener('click',cFire);
 btnCenter.addEventListener('touchstart',cFire,{passive:false});
